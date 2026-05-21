@@ -2,7 +2,7 @@
 
 DotDoctor is a static analysis tool for Linux desktop users who manage modular dotfiles, especially Hyprland setups on Arch Linux and CachyOS.
 
-It is built to walk split configuration trees, follow `source = ...` includes, resolve nested variables, extract external binary dependencies, and verify whether each command is available on the current system with Go's `exec.LookPath()`.
+It is built to walk split configuration trees, follow `source = ...` includes, and resolve nested variables. It then extracts external binary dependencies and verifies whether each command is available on the current system with Go's `exec.LookPath()`.
 
 ## Features
 
@@ -28,7 +28,7 @@ cd DotDoctor
 go build ./cmd/dotdoctor
 ```
 
-This produces a local `dotdoctor` binary in the repository root when used with:
+That command writes a local `dotdoctor` binary to the repository root by default. If you want to name the output explicitly, use:
 
 ```bash
 go build -o dotdoctor ./cmd/dotdoctor
