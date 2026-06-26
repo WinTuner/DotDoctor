@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"runtime"
+
 	"github.com/WinTuner/DotDoctor/internal/scanner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -54,6 +56,42 @@ var archPackageMap = map[string]string{
 	"Hack Nerd Font":          "ttf-hack-nerd",
 	"Noto Sans":               "noto-fonts",
 	"Noto Color Emoji":        "noto-fonts-emoji",
+}
+
+var brewPackageMap = map[string]string{
+	// Binaries
+	"aerospace":     "aerospace",
+	"yabai":         "yabai",
+	"skhd":          "skhd",
+	"kitty":         "kitty",
+	"alacritty":     "alacritty",
+	"fontconfig":    "fontconfig",
+	"brightnessctl": "brightness",
+	"playerctl":     "playerctl",
+
+	// Fonts
+	"JetBrainsMono Nerd Font": "font-jetbrains-mono-nerd-font",
+	"FiraCode Nerd Font":      "font-fira-code-nerd-font",
+	"MesloLGS NF":             "font-meslo-lg-nerd-font",
+	"CascadiaCode Nerd Font":  "font-cascadia-code-nerd-font",
+	"Hack Nerd Font":          "font-hack-nerd-font",
+}
+
+func getPackageMapping(name string) string {
+	if runtime.GOOS == "darwin" {
+		return brewPackageMap[name]
+	}
+	return archPackageMap[name]
+}
+
+func getSuggestionText(pkg string) string {
+	if runtime.GOOS == "darwin" {
+		if strings.HasPrefix(pkg, "font-") {
+			return fmt.Sprintf("Run 'brew install --cask %s'", pkg)
+		}
+		return fmt.Sprintf("Run 'brew install %s'", pkg)
+	}
+	return fmt.Sprintf("Run 'sudo pacman -S %s'", pkg)
 }
 
 type DependencyItem struct {
@@ -188,7 +226,7 @@ func (ws *watcherState) handleReload() {
 	sortedCmds := sortMapKeys(s.Binaries)
 	for _, cmd := range sortedCmds {
 		found := checkBinaryFound(cmd)
-		pkg := archPackageMap[cmd]
+		pkg := getPackageMapping(cmd)
 		binariesList = append(binariesList, DependencyItem{
 			Name:        cmd,
 			Type:        "binary",
@@ -202,7 +240,7 @@ func (ws *watcherState) handleReload() {
 	sortedFonts := sortMapKeys(s.Fonts)
 	for _, font := range sortedFonts {
 		found := checkFontFound(font, hasFontConfig)
-		pkg := archPackageMap[font]
+		pkg := getPackageMapping(font)
 		fontsList = append(fontsList, DependencyItem{
 			Name:        font,
 			Type:        "font",
@@ -276,6 +314,12 @@ func checkFontFound(font string, hasFontConfig bool) bool {
 }
 
 func getInstallerCommand(pkg string) *exec.Cmd {
+	if runtime.GOOS == "darwin" {
+		if strings.HasPrefix(pkg, "font-") {
+			return exec.Command("brew", "install", "--cask", pkg)
+		}
+		return exec.Command("brew", "install", pkg)
+	}
 	if _, err := exec.LookPath("yay"); err == nil {
 		return exec.Command("yay", "-S", pkg)
 	}
@@ -341,7 +385,7 @@ func exportReport(m model, visitedFiles map[string]bool) error {
 		for _, b := range missingBinaries {
 			fmt.Fprintf(w, "- **`%s`**\n", b.Name)
 			if b.PackageName != "" {
-				fmt.Fprintf(w, "  - Recommendation: Install package `%s` (AUR/Official)\n\n", b.PackageName)
+				fmt.Fprintf(w, "  - Recommendation: %s\n\n", getSuggestionText(b.PackageName))
 			} else {
 				fmt.Fprintf(w, "  - Recommendation: Search for this binary in your package manager\n\n")
 			}
@@ -354,7 +398,7 @@ func exportReport(m model, visitedFiles map[string]bool) error {
 		for _, font := range missingFonts {
 			fmt.Fprintf(w, "- **`%s`**\n", font.Name)
 			if font.PackageName != "" {
-				fmt.Fprintf(w, "  - Recommendation: Install package `%s` (AUR/Official)\n\n", font.PackageName)
+				fmt.Fprintf(w, "  - Recommendation: %s\n\n", getSuggestionText(font.PackageName))
 			} else {
 				fmt.Fprintf(w, "  - Recommendation: Search for this font in your package manager\n\n")
 			}
@@ -714,7 +758,7 @@ func (m model) View() string {
 				Bold(true).
 				Foreground(lipgloss.Color("#f9e2af")).
 				Padding(0, 1)
-			hint = hintStyle.Render(fmt.Sprintf("💡 Suggestion: Run 'sudo pacman -S %s' or press 'i'/'x' to auto-install", selectedItem.PackageName))
+			hint = hintStyle.Render(fmt.Sprintf("💡 Suggestion: %s or press 'i'/'x' to auto-install", getSuggestionText(selectedItem.PackageName)))
 		} else if !selectedItem.Found {
 			hintStyle := lipgloss.NewStyle().
 				Bold(true).
@@ -774,7 +818,7 @@ func main() {
 	sortedCmds := sortMapKeys(s.Binaries)
 	for _, cmd := range sortedCmds {
 		found := checkBinaryFound(cmd)
-		pkg := archPackageMap[cmd]
+		pkg := getPackageMapping(cmd)
 		binariesList = append(binariesList, DependencyItem{
 			Name:        cmd,
 			Type:        "binary",
@@ -788,7 +832,7 @@ func main() {
 	sortedFonts := sortMapKeys(s.Fonts)
 	for _, font := range sortedFonts {
 		found := checkFontFound(font, hasFontConfig)
-		pkg := archPackageMap[font]
+		pkg := getPackageMapping(font)
 		fontsList = append(fontsList, DependencyItem{
 			Name:        font,
 			Type:        "font",

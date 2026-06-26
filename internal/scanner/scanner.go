@@ -3,7 +3,6 @@ package scanner
 import (
 	"bufio"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -155,42 +154,6 @@ func ExpandPath(path string) string {
 	return path
 }
 
-func VerifyFont(fontFamily string) bool {
-	// 1. Try fc-list
-	cmd := exec.Command("fc-list", ":", "family")
-	output, err := cmd.Output()
-	if err == nil {
-		target := simplifyFontName(fontFamily)
-		if target == "" {
-			return false
-		}
-
-		lines := strings.Split(string(output), "\n")
-		for _, line := range lines {
-			// fc-list output is comma separated families
-			families := strings.Split(line, ",")
-			for _, f := range families {
-				f = strings.TrimSpace(f)
-				if f == "" {
-					continue
-				}
-
-				simF := simplifyFontName(f)
-				if simF == "" {
-					continue
-				}
-
-				// Check for exact simplified match or substring match
-				if simF == target || strings.Contains(simF, target) || strings.Contains(target, simF) {
-					return true
-				}
-			}
-		}
-	}
-
-	return false
-}
-
 func simplifyFontName(name string) string {
 	name = strings.ToLower(name)
 	// Remove common suffixes/parts that vary
@@ -201,9 +164,4 @@ func simplifyFontName(name string) string {
 	name = strings.ReplaceAll(name, "-", "")
 	name = strings.ReplaceAll(name, "_", "")
 	return strings.TrimSpace(name)
-}
-
-func CheckFontConfig() bool {
-	_, err := exec.LookPath("fc-list")
-	return err == nil
 }
