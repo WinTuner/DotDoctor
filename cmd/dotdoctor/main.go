@@ -17,6 +17,8 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+const Version = "1.0.0"
+
 var archPackageMap = map[string]string{
 	// Binaries
 	"waybar":        "waybar",
@@ -742,6 +744,14 @@ func (m model) View() string {
 }
 
 func main() {
+	// Parse version flags first
+	for _, arg := range os.Args[1:] {
+		if arg == "-v" || arg == "--version" {
+			fmt.Printf("DotDoctor version %s\n", Version)
+			os.Exit(0)
+		}
+	}
+
 	configPath := getConfigPath()
 
 	s := scanner.NewScanner()
@@ -850,8 +860,10 @@ func sortMapKeys(m map[string]bool) []string {
 }
 
 func getConfigPath() string {
-	if len(os.Args) > 1 {
-		return os.Args[1]
+	for _, arg := range os.Args[1:] {
+		if !strings.HasPrefix(arg, "-") {
+			return arg
+		}
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

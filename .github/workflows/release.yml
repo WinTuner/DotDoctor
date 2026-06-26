@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Run Tests
+        run: go test -v ./...
+
+  release:
+    name: Create Release
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Cross Compile and Package Binaries
+        run: |
+          VERSION="${{ github.ref_name }}"
+          mkdir -p dist
+          cp LICENSE README.md dist/
+          
+          # Build and package for linux/amd64
+          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/dotdoctor ./cmd/dotdoctor
+          tar -czf dist/dotdoctor-${VERSION}-linux-amd64.tar.gz -C dist dotdoctor LICENSE README.md
+          rm dist/dotdoctor
+          
+          # Build and package for linux/arm64
+          GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/dotdoctor ./cmd/dotdoctor
+          tar -czf dist/dotdoctor-${VERSION}-linux-arm64.tar.gz -C dist dotdoctor LICENSE README.md
+          rm dist/dotdoctor
+          
+          rm dist/LICENSE dist/README.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
