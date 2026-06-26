@@ -77,7 +77,26 @@ var brewPackageMap = map[string]string{
 	"Hack Nerd Font":          "font-hack-nerd-font",
 }
 
+var windowsPackageMap = map[string]string{
+	// Binaries
+	"glazewm":   "GlazeWM.GlazeWM",
+	"komorebi":  "LGUG2Z.Komorebi",
+	"yasb":      "yasb",
+	"kitty":     "Alacritty.Alacritty", // Windows equivalent
+	"alacritty": "Alacritty.Alacritty",
+
+	// Fonts
+	"JetBrainsMono Nerd Font": "NerdFonts.JetBrainsMono",
+	"FiraCode Nerd Font":      "NerdFonts.FiraCode",
+	"MesloLGS NF":             "NerdFonts.Meslo",
+	"CascadiaCode Nerd Font":  "NerdFonts.CascadiaCode",
+	"Hack Nerd Font":          "NerdFonts.Hack",
+}
+
 func getPackageMapping(name string) string {
+	if runtime.GOOS == "windows" {
+		return windowsPackageMap[name]
+	}
 	if runtime.GOOS == "darwin" {
 		return brewPackageMap[name]
 	}
@@ -85,6 +104,9 @@ func getPackageMapping(name string) string {
 }
 
 func getSuggestionText(pkg string) string {
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf("Run 'winget install %s'", pkg)
+	}
 	if runtime.GOOS == "darwin" {
 		if strings.HasPrefix(pkg, "font-") {
 			return fmt.Sprintf("Run 'brew install --cask %s'", pkg)
@@ -314,6 +336,9 @@ func checkFontFound(font string, hasFontConfig bool) bool {
 }
 
 func getInstallerCommand(pkg string) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return exec.Command("winget", "install", pkg)
+	}
 	if runtime.GOOS == "darwin" {
 		if strings.HasPrefix(pkg, "font-") {
 			return exec.Command("brew", "install", "--cask", pkg)

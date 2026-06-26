@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goos: [linux, darwin]
+        goos: [linux, darwin, windows]
         goarch: [amd64, arm64]
     steps:
       - name: Checkout Code
@@ -58,8 +58,18 @@ jobs:
           mkdir -p dist
           cp LICENSE README.md dist/
           
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags="-s -w" -o dist/dotdoctor ./cmd/dotdoctor
-          tar -czf "dotdoctor-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" -C dist dotdoctor LICENSE README.md
+          BINARY_NAME="dotdoctor"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BINARY_NAME="dotdoctor.exe"
+          fi
+          
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags="-s -w" -o "dist/${BINARY_NAME}" ./cmd/dotdoctor
+          
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip -j "dotdoctor-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.zip" dist/${BINARY_NAME} dist/LICENSE dist/README.md
+          else
+            tar -czf "dotdoctor-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" -C dist dotdoctor LICENSE README.md
+          fi
           
           rm -rf dist
 
@@ -67,7 +77,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dotdoctor-artifact-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dotdoctor-*.tar.gz
+          path: |
+            dotdoctor-*.tar.gz
+            dotdoctor-*.zip
           retention-days: 1
 
   release:
@@ -89,5 +101,6 @@ jobs:
         with:
           files: |
             dotdoctor-*.tar.gz
+            dotdoctor-*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
