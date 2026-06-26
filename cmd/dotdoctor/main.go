@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/fatih/color"
+	"github.com/fsnotify/fsnotify"
 )
 
 var archPackageMap = map[string]string{
@@ -80,10 +81,147 @@ type model struct {
 
 type clearNotificationMsg struct{}
 
+type reloadMsg struct {
+	binaries     []DependencyItem
+	fonts        []DependencyItem
+	visitedFiles map[string]bool
+}
+
 type installFinishedMsg struct {
 	itemIndex int
 	tab       int
 	err       error
+}
+
+type watcherState struct {
+	watcher    *fsnotify.Watcher
+	watched    map[string]bool
+	configPath string
+	program    *tea.Program
+}
+
+func startConfigWatcher(configPath string, initialFiles map[string]bool, p *tea.Program) (*watcherState, error) {
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, err
+	}
+
+	ws := &watcherState{
+		watcher:    w,
+		watched:    make(map[string]bool),
+		configPath: configPath,
+		program:    p,
+	}
+
+	ws.updateWatchList(initialFiles)
+	go ws.watchLoop()
+
+	return ws, nil
+}
+
+func (ws *watcherState) updateWatchList(newFiles map[string]bool) {
+	targets := make(map[string]bool)
+	for f := range newFiles {
+		targets[f] = true
+	}
+	absConfig, err := filepath.Abs(scanner.ExpandPath(ws.configPath))
+	if err == nil {
+		targets[absConfig] = true
+	}
+
+	// Add new watched files
+	for f := range targets {
+		if !ws.watched[f] {
+			err := ws.watcher.Add(f)
+			if err == nil {
+				ws.watched[f] = true
+			}
+		}
+	}
+
+	// Remove untracked watched files
+	for f := range ws.watched {
+		if !targets[f] {
+			_ = ws.watcher.Remove(f)
+			delete(ws.watched, f)
+		}
+	}
+}
+
+func (ws *watcherState) watchLoop() {
+	var timer *time.Timer
+	const debounceDuration = 100 * time.Millisecond
+
+	for {
+		select {
+		case event, ok := <-ws.watcher.Events:
+			if !ok {
+				return
+			}
+			if event.Has(fsnotify.Write) {
+				if timer != nil {
+					timer.Stop()
+				}
+				timer = time.AfterFunc(debounceDuration, func() {
+					ws.handleReload()
+				})
+			}
+		case err, ok := <-ws.watcher.Errors:
+			if !ok {
+				return
+			}
+			_ = err
+		}
+	}
+}
+
+func (ws *watcherState) handleReload() {
+	s := scanner.NewScanner()
+	err := s.Scan(ws.configPath)
+	if err != nil {
+		return
+	}
+
+	var binariesList []DependencyItem
+	sortedCmds := sortMapKeys(s.Binaries)
+	for _, cmd := range sortedCmds {
+		found := checkBinaryFound(cmd)
+		pkg := archPackageMap[cmd]
+		binariesList = append(binariesList, DependencyItem{
+			Name:        cmd,
+			Type:        "binary",
+			Found:       found,
+			PackageName: pkg,
+		})
+	}
+
+	var fontsList []DependencyItem
+	hasFontConfig := scanner.CheckFontConfig()
+	sortedFonts := sortMapKeys(s.Fonts)
+	for _, font := range sortedFonts {
+		found := checkFontFound(font, hasFontConfig)
+		pkg := archPackageMap[font]
+		fontsList = append(fontsList, DependencyItem{
+			Name:        font,
+			Type:        "font",
+			Found:       found,
+			PackageName: pkg,
+		})
+	}
+
+	ws.updateWatchList(s.VisitedFiles)
+
+	ws.program.Send(reloadMsg{
+		binaries:     binariesList,
+		fonts:        fontsList,
+		visitedFiles: s.VisitedFiles,
+	})
+}
+
+func (ws *watcherState) Close() {
+	if ws.watcher != nil {
+		_ = ws.watcher.Close()
+	}
 }
 
 func (m model) Init() tea.Cmd {
@@ -238,6 +376,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case clearNotificationMsg:
 		m.notification = ""
 		return m, nil
+
+	case reloadMsg:
+		m.binaries = msg.binaries
+		m.fonts = msg.fonts
+		m.visitedFiles = msg.visitedFiles
+
+		// Preserve cursor bounds
+		items := m.getActiveItems()
+		if m.cursor >= len(items) {
+			m.cursor = len(items) - 1
+			if m.cursor < 0 {
+				m.cursor = 0
+			}
+		}
+
+		maxVisible := m.getMaxVisibleItems()
+		if m.cursor < m.scrollOffset {
+			m.scrollOffset = m.cursor
+		} else if m.cursor >= m.scrollOffset+maxVisible {
+			m.scrollOffset = m.cursor - maxVisible + 1
+		}
+		if m.scrollOffset < 0 {
+			m.scrollOffset = 0
+		}
+
+		m.notification = "🔄 Config modified! Hot-reloaded successfully."
+		return m, m.clearNotificationCmd()
 
 	case installFinishedMsg:
 		if msg.err != nil {
@@ -633,6 +798,13 @@ func main() {
 	}
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
+
+	// Start configuration watcher
+	ws, err := startConfigWatcher(configPath, s.VisitedFiles, p)
+	if err == nil {
+		defer ws.Close()
+	}
+
 	finalModel, err := p.Run()
 	if err != nil {
 		fmt.Printf("Error running TUI: %v\n", err)
