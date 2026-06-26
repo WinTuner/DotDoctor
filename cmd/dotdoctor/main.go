@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/WinTuner/DotDoctor/internal/scanner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -63,6 +65,7 @@ type model struct {
 	binaries      []DependencyItem
 	fonts         []DependencyItem
 	hasFontConfig bool
+	visitedFiles  map[string]bool
 
 	activeTab    int // 0 = Binaries, 1 = Fonts
 	cursor       int
@@ -71,7 +74,16 @@ type model struct {
 	terminalWidth  int
 	terminalHeight int
 
-	quitting bool
+	quitting     bool
+	notification string
+}
+
+type clearNotificationMsg struct{}
+
+type installFinishedMsg struct {
+	itemIndex int
+	tab       int
+	err       error
 }
 
 func (m model) Init() tea.Cmd {
@@ -90,17 +102,172 @@ func (m model) getMaxVisibleItems() int {
 	// Header: 2 lines
 	// Tabs: 2 lines
 	// Body Border: 2 lines
-	// Suggestions/Status: 3 lines
-	// Total overhead: ~9 lines
-	h := m.terminalHeight - 9
+	// Suggestions/Status/Notification: 3 lines
+	// Help menu: 1 line
+	// Total overhead: ~10 lines
+	h := m.terminalHeight - 10
 	if h < 3 {
 		return 3
 	}
 	return h
 }
 
+func (m model) clearNotificationCmd() tea.Cmd {
+	return tea.Tick(4*time.Second, func(t time.Time) tea.Msg {
+		return clearNotificationMsg{}
+	})
+}
+
+func checkBinaryFound(cmd string) bool {
+	expandedPath := scanner.ExpandPath(cmd)
+	if filepath.IsAbs(expandedPath) {
+		_, err := os.Stat(expandedPath)
+		return err == nil
+	}
+	_, err := exec.LookPath(expandedPath)
+	return err == nil
+}
+
+func checkFontFound(font string, hasFontConfig bool) bool {
+	if !hasFontConfig {
+		return false
+	}
+	return scanner.VerifyFont(font)
+}
+
+func getInstallerCommand(pkg string) *exec.Cmd {
+	if _, err := exec.LookPath("yay"); err == nil {
+		return exec.Command("yay", "-S", pkg)
+	}
+	if _, err := exec.LookPath("paru"); err == nil {
+		return exec.Command("paru", "-S", pkg)
+	}
+	return exec.Command("sudo", "pacman", "-S", "--noconfirm", pkg)
+}
+
+func exportReport(m model, visitedFiles map[string]bool) error {
+	f, err := os.Create("dotdoctor_report.md")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	w := bufio.NewWriter(f)
+
+	fmt.Fprintln(w, "# 🩺 DotDoctor | System Health Report")
+	fmt.Fprintf(w, "- **Date of Execution:** %s\n", time.Now().Format("2006-01-02 15:04:05 MST"))
+	fmt.Fprintf(w, "- **Target Config:** `%s`\n\n", m.configPath)
+
+	fmt.Fprintln(w, "## 📂 Scanned Files")
+	var sortedFiles []string
+	for file := range visitedFiles {
+		sortedFiles = append(sortedFiles, file)
+	}
+	sort.Strings(sortedFiles)
+	for _, file := range sortedFiles {
+		fmt.Fprintf(w, "- `%s`\n", file)
+	}
+	fmt.Fprintln(w)
+
+	// Summary stats
+	binariesTotal := len(m.binaries)
+	binariesFound := 0
+	var missingBinaries []DependencyItem
+	for _, b := range m.binaries {
+		if b.Found {
+			binariesFound++
+		} else {
+			missingBinaries = append(missingBinaries, b)
+		}
+	}
+
+	fontsTotal := len(m.fonts)
+	fontsFound := 0
+	var missingFonts []DependencyItem
+	for _, font := range m.fonts {
+		if font.Found {
+			fontsFound++
+		} else {
+			missingFonts = append(missingFonts, font)
+		}
+	}
+
+	fmt.Fprintln(w, "## 📊 Scan Summary Score")
+	fmt.Fprintf(w, "- **Binaries:** %d / %d verified healthy\n", binariesFound, binariesTotal)
+	fmt.Fprintf(w, "- **Fonts:** %d / %d verified healthy\n\n", fontsFound, fontsTotal)
+
+	if len(missingBinaries) > 0 {
+		fmt.Fprintln(w, "## ❌ Missing Binaries & Scripts")
+		for _, b := range missingBinaries {
+			fmt.Fprintf(w, "- **`%s`**\n", b.Name)
+			if b.PackageName != "" {
+				fmt.Fprintf(w, "  - Recommendation: Install package `%s` (AUR/Official)\n\n", b.PackageName)
+			} else {
+				fmt.Fprintf(w, "  - Recommendation: Search for this binary in your package manager\n\n")
+			}
+		}
+		fmt.Fprintln(w)
+	}
+
+	if len(missingFonts) > 0 {
+		fmt.Fprintln(w, "## ❌ Missing Fonts & Icons")
+		for _, font := range missingFonts {
+			fmt.Fprintf(w, "- **`%s`**\n", font.Name)
+			if font.PackageName != "" {
+				fmt.Fprintf(w, "  - Recommendation: Install package `%s` (AUR/Official)\n\n", font.PackageName)
+			} else {
+				fmt.Fprintf(w, "  - Recommendation: Search for this font in your package manager\n\n")
+			}
+		}
+		fmt.Fprintln(w)
+	}
+
+	if len(missingBinaries) == 0 && len(missingFonts) == 0 {
+		fmt.Fprintln(w, "## ✨ System Status: Healthy")
+		fmt.Fprintln(w, "All scanned binaries and fonts are verified and present on the system!")
+	} else {
+		fmt.Fprintln(w, "## 💡 Quick Fix Recommendation")
+		fmt.Fprintln(w, "You can trigger auto-fix installations directly from the interactive DotDoctor TUI dashboard by highlighting any missing dependency and pressing `i` or `x`.")
+	}
+
+	return w.Flush()
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case clearNotificationMsg:
+		m.notification = ""
+		return m, nil
+
+	case installFinishedMsg:
+		if msg.err != nil {
+			m.notification = fmt.Sprintf("❌ Installation failed: %v", msg.err)
+			return m, m.clearNotificationCmd()
+		}
+
+		if msg.tab == 0 {
+			if msg.itemIndex < len(m.binaries) {
+				item := &m.binaries[msg.itemIndex]
+				item.Found = checkBinaryFound(item.Name)
+				if item.Found {
+					m.notification = fmt.Sprintf("✅ Installed and verified: %s", item.Name)
+				} else {
+					m.notification = fmt.Sprintf("⚠️ Finished installation, but %s is still missing", item.Name)
+				}
+			}
+		} else {
+			if msg.itemIndex < len(m.fonts) {
+				item := &m.fonts[msg.itemIndex]
+				item.Found = checkFontFound(item.Name, m.hasFontConfig)
+				if item.Found {
+					m.notification = fmt.Sprintf("✅ Installed and verified font: %s", item.Name)
+				} else {
+					m.notification = fmt.Sprintf("⚠️ Finished installation, but font %s is still missing", item.Name)
+				}
+			}
+		}
+		return m, m.clearNotificationCmd()
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -160,6 +327,40 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.scrollOffset = 0
 			}
 			return m, nil
+
+		case "i", "x":
+			items := m.getActiveItems()
+			if len(items) == 0 || m.cursor >= len(items) {
+				return m, nil
+			}
+			item := items[m.cursor]
+			if item.Found {
+				m.notification = "✨ Dependency is already verified and healthy!"
+				return m, m.clearNotificationCmd()
+			}
+			if item.PackageName == "" {
+				m.notification = fmt.Sprintf("⚠️ No installation hint available for %s", item.Name)
+				return m, m.clearNotificationCmd()
+			}
+
+			// Run installation command
+			c := getInstallerCommand(item.PackageName)
+			return m, tea.ExecProcess(c, func(err error) tea.Msg {
+				return installFinishedMsg{
+					itemIndex: m.cursor,
+					tab:       m.activeTab,
+					err:       err,
+				}
+			})
+
+		case "e":
+			err := exportReport(m, m.visitedFiles)
+			if err != nil {
+				m.notification = fmt.Sprintf("❌ Report export failed: %v", err)
+			} else {
+				m.notification = "📝 Report exported to dotdoctor_report.md!"
+			}
+			return m, m.clearNotificationCmd()
 		}
 
 	case tea.WindowSizeMsg:
@@ -326,16 +527,27 @@ func (m model) View() string {
 	sb.WriteString(bodyStyle.Render(bodyContent))
 	sb.WriteString("\n")
 
-	// 4. Status and Help Bar
+	// 4. Status, Notifications and Help Bar
 	var hint string
-	if len(items) > 0 && m.cursor < len(items) {
+	if m.notification != "" {
+		notificationStyle := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#a6e3a1")).
+			Padding(0, 1)
+		if strings.HasPrefix(m.notification, "❌") {
+			notificationStyle = notificationStyle.Foreground(lipgloss.Color("#f38ba8"))
+		} else if strings.HasPrefix(m.notification, "⚠️") {
+			notificationStyle = notificationStyle.Foreground(lipgloss.Color("#f9e2af"))
+		}
+		hint = notificationStyle.Render(m.notification)
+	} else if len(items) > 0 && m.cursor < len(items) {
 		selectedItem := items[m.cursor]
 		if !selectedItem.Found && selectedItem.PackageName != "" {
 			hintStyle := lipgloss.NewStyle().
 				Bold(true).
 				Foreground(lipgloss.Color("#f9e2af")).
 				Padding(0, 1)
-			hint = hintStyle.Render(fmt.Sprintf("💡 Suggestion: Run 'sudo pacman -S %s'", selectedItem.PackageName))
+			hint = hintStyle.Render(fmt.Sprintf("💡 Suggestion: Run 'sudo pacman -S %s' or press 'i'/'x' to auto-install", selectedItem.PackageName))
 		} else if !selectedItem.Found {
 			hintStyle := lipgloss.NewStyle().
 				Bold(true).
@@ -350,6 +562,7 @@ func (m model) View() string {
 			hint = successStyle.Render("✨ Dependency verified and healthy!")
 		}
 	}
+
 	if hint != "" {
 		sb.WriteString(hint)
 		sb.WriteString("\n")
@@ -357,7 +570,7 @@ func (m model) View() string {
 
 	helpStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#585b70"))
-	helpText := "Tab: Switch Tab • ↑/↓: Scroll • Q: Quit"
+	helpText := "Tab: Switch Tab • ↑/↓: Scroll • I/X: Auto-Install • E: Export Report • Q: Quit"
 	sb.WriteString(helpStyle.Render(helpText))
 
 	return sb.String()
@@ -385,21 +598,7 @@ func main() {
 	var binariesList []DependencyItem
 	sortedCmds := sortMapKeys(s.Binaries)
 	for _, cmd := range sortedCmds {
-		expandedPath := scanner.ExpandPath(cmd)
-
-		found := false
-		if filepath.IsAbs(expandedPath) {
-			_, err := os.Stat(expandedPath)
-			if err == nil {
-				found = true
-			}
-		} else {
-			_, err := exec.LookPath(expandedPath)
-			if err == nil {
-				found = true
-			}
-		}
-
+		found := checkBinaryFound(cmd)
 		pkg := archPackageMap[cmd]
 		binariesList = append(binariesList, DependencyItem{
 			Name:        cmd,
@@ -413,10 +612,7 @@ func main() {
 	hasFontConfig := scanner.CheckFontConfig()
 	sortedFonts := sortMapKeys(s.Fonts)
 	for _, font := range sortedFonts {
-		found := false
-		if hasFontConfig {
-			found = scanner.VerifyFont(font)
-		}
+		found := checkFontFound(font, hasFontConfig)
 		pkg := archPackageMap[font]
 		fontsList = append(fontsList, DependencyItem{
 			Name:        font,
@@ -431,6 +627,7 @@ func main() {
 		binaries:       binariesList,
 		fonts:          fontsList,
 		hasFontConfig:  hasFontConfig,
+		visitedFiles:   s.VisitedFiles,
 		terminalWidth:  80,
 		terminalHeight: 24,
 	}
