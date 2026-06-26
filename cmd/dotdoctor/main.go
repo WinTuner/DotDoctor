@@ -813,19 +813,40 @@ func (m model) View() string {
 }
 
 func main() {
-	// Parse version flags first
+	// Parse CLI flags first
 	for _, arg := range os.Args[1:] {
 		if arg == "-v" || arg == "--version" {
 			fmt.Printf("DotDoctor version %s\n", Version)
 			os.Exit(0)
 		}
+		if arg == "-h" || arg == "--help" {
+			printHelp()
+			os.Exit(0)
+		}
 	}
 
-	configPath := getConfigPath()
+	configPath, found := detectConfigPath()
+	if !found {
+		printNoConfigWarning()
+		os.Exit(1)
+	}
 
 	s := scanner.NewScanner()
 
-	color.Cyan("🔍 Initiating scan starting from: %s\n", configPath)
+	// Detect if config path was auto-detected or passed via arguments
+	autoDetected := true
+	for _, arg := range os.Args[1:] {
+		if !strings.HasPrefix(arg, "-") {
+			autoDetected = false
+			break
+		}
+	}
+
+	if autoDetected {
+		color.Green("🎯 Auto-detected active config: %s\n", configPath)
+	} else {
+		color.Cyan("🔍 Initiating scan starting from: %s\n", configPath)
+	}
 
 	err := s.Scan(configPath)
 	if err != nil {
@@ -928,17 +949,112 @@ func sortMapKeys(m map[string]bool) []string {
 	return keys
 }
 
-func getConfigPath() string {
+func detectConfigPath() (string, bool) {
 	for _, arg := range os.Args[1:] {
 		if !strings.HasPrefix(arg, "-") {
-			return arg
+			return arg, true
 		}
 	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "hyprland.conf"
+		return "", false
 	}
-	return filepath.Join(home, ".config/hyprland/hyprland.conf")
+
+	var candidates []string
+	if runtime.GOOS == "windows" {
+		candidates = []string{
+			filepath.Join(home, ".config/glazewm/config.yaml"),
+			filepath.Join(home, ".glazewm.yaml"),
+		}
+	} else if runtime.GOOS == "darwin" {
+		candidates = []string{
+			filepath.Join(home, ".config/aerospace/aerospace.toml"),
+			filepath.Join(home, ".config/yabai/yabairc"),
+			filepath.Join(home, ".skhdrc"),
+		}
+	} else {
+		// Default is Linux
+		candidates = []string{
+			filepath.Join(home, ".config/hypr/hyprland.conf"),
+			filepath.Join(home, ".config/sway/config"),
+			filepath.Join(home, ".config/i3/config"),
+		}
+	}
+
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c, true
+		}
+	}
+
+	return "", false
+}
+
+func printNoConfigWarning() {
+	var warning strings.Builder
+
+	warning.WriteString(lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#11111b")).
+		Background(lipgloss.Color("#f38ba8")).
+		Padding(0, 2).
+		MarginBottom(1).
+		Render("⚠️ No Configuration File Detected"))
+	warning.WriteString("\n\n")
+
+	message := "DotDoctor could not automatically detect any active configurations on your system.\n\n" +
+		"Please pass the path to your config file explicitly:\n" +
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#a6e3a1")).Render("  dotdoctor <path-to-config-file>") + "\n\n" +
+		"Supported config fallbacks:\n" +
+		"  - Linux: Hyprland, Sway, i3\n" +
+		"  - macOS: Aerospace, Yabai, skhd\n" +
+		"  - Windows: GlazeWM\n"
+
+	warningStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#f38ba8")).
+		Padding(1, 2).
+		Width(65)
+
+	warning.WriteString(warningStyle.Render(message))
+	warning.WriteString("\n")
+
+	fmt.Print(warning.String())
+}
+
+func printHelp() {
+	var help strings.Builder
+
+	help.WriteString(lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#11111b")).
+		Background(lipgloss.Color("#89b4fa")).
+		Padding(0, 2).
+		MarginBottom(1).
+		Render("🩺 DotDoctor | System Health Check Tool"))
+	help.WriteString("\n\n")
+
+	usage := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#f5e0dc")).Render("Usage:") + "\n" +
+		"  dotdoctor [options] [config-path]\n\n" +
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#f5e0dc")).Render("Options:") + "\n" +
+		"  -h, --help      Show this help menu\n" +
+		"  -v, --version   Print version information\n\n" +
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#f5e0dc")).Render("Sample Commands:") + "\n" +
+		"  dotdoctor                    Auto-detect and check system config\n" +
+		"  dotdoctor ~/.config/hypr/hyprland.conf     Verify specific config file\n\n" +
+		"For full interactive features (Auto-Fixing and Reports), use the TUI dashboard."
+
+	helpStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#89b4fa")).
+		Padding(1, 2).
+		Width(65)
+
+	help.WriteString(helpStyle.Render(usage))
+	help.WriteString("\n")
+
+	fmt.Print(help.String())
 }
 
 func printSummary(totalBin, foundBin, missBin, totalFont, foundFont, missFont int) {
